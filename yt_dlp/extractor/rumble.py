@@ -10,13 +10,13 @@ from ..utils import (
     extract_attributes,
     format_field,
     get_element_by_class,
-    get_elements_html_by_class,
     int_or_none,
     join_nonempty,
     parse_count,
     parse_iso8601,
     traverse_obj,
     unescapeHTML,
+    url_or_none,
     urljoin,
 )
 
@@ -392,21 +392,33 @@ class RumbleChannelIE(InfoExtractor):
         'info_dict': {
             'id': 'goldenpoodleharleyeuna',
         },
+    }, {
+        'url': 'https://rumble.com/user/goldenpoodleharleyeuna/videos',
+        'only_matching': True,
     }]
 
     def entries(self, url, playlist_id):
+        visited = set()
         for page in itertools.count(1):
+            if not url or url in visited:
+                break
+            visited.add(url)
             try:
-                webpage = self._download_webpage(f'{url}?page={page}', playlist_id, note=f'Downloading page {page}')
+                webpage = self._download_webpage(url, playlist_id, note=f'Downloading page {page}')
             except ExtractorError as e:
                 if isinstance(e.cause, HTTPError) and e.cause.status == 404:
                     break
                 raise
-            for video_url in traverse_obj(
-                get_elements_html_by_class('videostream__link', webpage), (..., {extract_attributes}, 'href'),
-            ):
-                yield self.url_result(urljoin('https://rumble.com', video_url), RumbleIE)
+            data = self._search_json(
+                r'<rum-videos-grid\b[^>]*>\s*<script\b[^>]*>', webpage, 'video list', playlist_id)
+            for video in traverse_obj(data, ('items', lambda _, v: url_or_none(v['url']))):
+                yield self.url_result(
+                    video['url'], RumbleIE, video_title=traverse_obj(video, ('title', {str})))
+
+            url = urljoin(url, traverse_obj(
+                [extract_attributes(link) for link in re.findall(r'<link\b[^>]+>', webpage)],
+                (lambda _, v: v.get('rel') == 'next', 'href'), get_all=False))
 
     def _real_extract(self, url):
         url, playlist_id = self._match_valid_url(url).groups()
-        return self.playlist_result(self.entries(url, playlist_id), playlist_id=playlist_id)
+        return self.playlist_result(self.entries(f'{url}/videos', playlist_id), playlist_id=playlist_id)
